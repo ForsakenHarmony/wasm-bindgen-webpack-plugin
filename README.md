@@ -18,6 +18,7 @@ Make sure you have the following tools installed:
 
 - [Rust](https://rustup.rs/) with `wasm32-unknown-unknown` target
 - [wasm-bindgen](https://rustwasm.github.io/wasm-bindgen/install.html)
+- [wasm-opt](https://github.com/WebAssembly/binaryen#tools) (optional, for WebAssembly optimization)
 
 ```bash
 # Install the WebAssembly target
@@ -25,6 +26,18 @@ rustup target add wasm32-unknown-unknown
 
 # Install wasm-bindgen-cli
 cargo install wasm-bindgen-cli
+
+# Install binaryen (includes wasm-opt) - optional but recommended
+# On macOS:
+brew install binaryen
+
+# On Ubuntu/Debian:
+sudo apt install binaryen
+
+# Or build from source:
+git clone https://github.com/WebAssembly/binaryen.git
+cd binaryen
+cmake . && make
 ```
 
 ## Installation
@@ -66,6 +79,8 @@ interface WasmBindgenWebpackPluginOptions {
   cargoArgs?: string[];
   /** Additional wasm-bindgen flags */
   wasmBindgenArgs?: string[];
+  /** Enable WebAssembly optimization with wasm-opt before running wasm-bindgen */
+  optimizeWebassembly?: boolean;
 }
 ```
 
@@ -90,6 +105,9 @@ module.exports = {
       // Optional: Additional wasm-bindgen flags (default: [])
       // Note: --typescript is automatically added by the plugin
       wasmBindgenArgs: [],
+
+      // Optional: Enable WebAssembly optimization via wasm-opt (default: false)
+      optimizeWebassembly: true,
     })
   ]
 };
@@ -166,7 +184,8 @@ console.log(result); // 8
 2. **Target Directory Discovery**: Uses `cargo metadata` to determine the correct target directory for the project
 3. **Compilation**: When detected, it:
    - Runs `cargo build --target wasm32-unknown-unknown --target-dir <discovered-target-dir>` to compile the Rust crate to WebAssembly
-   - Runs `wasm-bindgen` on the resulting `.wasm` file to generate JavaScript bindings and TypeScript declarations
+   - Optionally runs `wasm-opt` on the resulting `.wasm` file to optimize it (if `wasmOptArgs` are provided)
+   - Runs `wasm-bindgen` on the (potentially optimized) `.wasm` file to generate JavaScript bindings and TypeScript declarations
 4. **Caching**: Results are cached in the specified cache directory and only recompiled when the `Cargo.toml` or Rust source files change
 5. **Integration**: The generated JavaScript file is returned to Webpack as if you had imported it directly
 6. **Hot Reloading**: All Rust source files and `Cargo.toml` are added as file dependencies for proper hot reloading
@@ -178,6 +197,7 @@ console.log(result); // 8
 | `cacheDir` | `string` | `".cache/wasm"` | Directory where compiled WASM files are cached |
 | `cargoArgs` | `string[]` | `["--release"]` | Additional arguments passed to `cargo build` |
 | `wasmBindgenArgs` | `string[]` | `[]` | Additional arguments passed to `wasm-bindgen` (Note: `--typescript` is automatically added) |
+| `optimizeWebassembly` | `boolean` | `false` | Enable WebAssembly optimization with `wasm-opt` |
 
 **Note**: The plugin automatically determines the Cargo target directory using `cargo metadata` and doesn't require manual configuration.
 
@@ -193,7 +213,8 @@ module.exports = {
   plugins: [
     new WasmBindgenWebpackPlugin({
       cargoArgs: isProduction ? ["--release"] : [],
-      wasmBindgenArgs: isProduction ? [] : ["--debug"]
+      wasmBindgenArgs: isProduction ? [] : ["--debug"],
+      optimizeWebassembly: isProduction, // Only optimize in production
     })
   ]
 };
@@ -208,7 +229,8 @@ const path = require("path");
 module.exports = {
   plugins: [
     new WasmBindgenWebpackPlugin({
-      cacheDir: path.join(__dirname, ".wasm-cache")
+      cacheDir: path.join(__dirname, ".wasm-cache"),
+      optimizeWebassembly: true, // Enable optimization
     })
   ]
 };
@@ -228,6 +250,24 @@ module.exports = {
 };
 ```
 
+### WebAssembly Optimization
+
+```javascript
+// webpack.config.js
+module.exports = {
+  plugins: [
+    new WasmBindgenWebpackPlugin({
+      cargoArgs: ["--release"],
+      optimizeWebassembly: true, // Enables wasm-opt
+    })
+  ]
+};
+```
+
+The `optimizeWebassembly: true` flag automatically applies these optimization flags:
+
+- `-O`: Optimize
+
 ## Troubleshooting
 
 ### Common Issues
@@ -235,9 +275,12 @@ module.exports = {
 1. **"cargo: command not found"**: Make sure Rust is installed and in your PATH
 2. **"wasm-bindgen: command not found"**: Install wasm-bindgen-cli with `cargo install wasm-bindgen-cli`
 3. **"target 'wasm32-unknown-unknown' not installed"**: Run `rustup target add wasm32-unknown-unknown`
+4. **"wasm-opt: command not found"**: Install binaryen (`brew install binaryen` on macOS) or set `optimizeWebassembly: false` in your config
 
 ### Performance Tips
 
 - The plugin caches compilation results, so subsequent builds are much faster
 - Use `--release` flag for production builds for smaller and faster WebAssembly modules
+- Enable `optimizeWebassembly: true` for maximum size optimization in production builds
 - Consider using `wee_alloc` as a global allocator in your Rust code to reduce bundle size
+- The optimization automatically enables bulk memory and other WebAssembly features for better performance

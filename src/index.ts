@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type SpawnOptions, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Compilation, Compiler, WebpackPluginInstance } from "webpack";
@@ -10,6 +10,8 @@ export interface WasmBindgenWebpackPluginOptions {
   cargoArgs?: string[];
   /** Additional wasm-bindgen flags */
   wasmBindgenArgs?: string[];
+  /** Enable WebAssembly optimization with wasm-opt before running wasm-bindgen */
+  optimizeWebassembly?: boolean;
 }
 
 interface CompilationResult {
@@ -34,6 +36,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       cacheDir: options.cacheDir ? path.resolve(options.cacheDir) : path.join(process.cwd(), ".cache/wasm"),
       cargoArgs: options.cargoArgs || ["--release"],
       wasmBindgenArgs: options.wasmBindgenArgs || [],
+      optimizeWebassembly: options.optimizeWebassembly || false,
     };
   }
 
@@ -114,9 +117,12 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       // Step 2: Compile Rust to WebAssembly
       await this.runCargoBuild(cargoDir, cargoTargetDir);
 
-      // Step 3: Run wasm-bindgen
+      // Step 3: Optionally run wasm-opt on the WebAssembly file
       const wasmFile = path.join(cargoTargetDir, "wasm32-unknown-unknown", "release", `${packageName}.wasm`);
-      const result = await this.runWasmBindgen(wasmFile, packageName);
+      const optimizedWasmFile = await this.runWasmOpt(wasmFile);
+
+      // Step 4: Run wasm-bindgen
+      const result = await this.runWasmBindgen(optimizedWasmFile, packageName);
 
       // Cache the result
       this.compilationCache.set(cacheKey, result);
@@ -136,44 +142,19 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       return this.cargoTargetDirCache.get(cargoDir)!;
     }
 
-    return new Promise((resolve, reject) => {
-      const cargo = spawn("cargo", ["metadata", "--format-version", "1"], {
+    const { stdout } = await spawnProcess("cargo", ["metadata", "--format-version", "1"], {
+      options: {
         cwd: cargoDir,
-        stdio: ["inherit", "pipe", "pipe"],
-      });
-
-      let stdout = "";
-      let stderr = "";
-
-      cargo.stdout.on("data", (data) => {
-        stdout += data.toString();
-      });
-
-      cargo.stderr.on("data", (data) => {
-        stderr += data.toString();
-      });
-
-      cargo.on("close", (code) => {
-        if (code === 0) {
-          try {
-            const metadata: CargoMetadata = JSON.parse(stdout);
-            const targetDir = metadata.target_directory;
-            console.log(`Cargo target directory: ${targetDir}`);
-            // Cache the result
-            this.cargoTargetDirCache.set(cargoDir, targetDir);
-            resolve(targetDir);
-          } catch (error) {
-            reject(new Error(`Failed to parse cargo metadata: ${error}`));
-          }
-        } else {
-          reject(new Error(`cargo metadata failed with exit code ${code}:\n${stderr}`));
-        }
-      });
-
-      cargo.on("error", (error) => {
-        reject(new Error(`Failed to spawn cargo: ${error.message}`));
-      });
+      },
+      errorPrefix: "cargo metadata",
     });
+
+    const metadata: CargoMetadata = JSON.parse(stdout);
+    const targetDirectory = metadata.target_directory;
+    console.log(`Cargo target directory: ${targetDirectory}`);
+    // Cache the result
+    this.cargoTargetDirCache.set(cargoDir, targetDirectory);
+    return targetDirectory;
   }
 
   private async runCargoBuild(cargoDir: string, cargoTargetDir: string): Promise<void> {
@@ -186,35 +167,31 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       ...this.options.cargoArgs,
     ];
 
-    return new Promise((resolve, reject) => {
-      const cargo = spawn("cargo", cargoArgs, {
+    await spawnProcess("cargo", cargoArgs, {
+      options: {
         cwd: cargoDir,
-        stdio: ["inherit", "pipe", "pipe"],
-      });
-
-      let stdout = "";
-      let stderr = "";
-
-      cargo.stdout.on("data", (data) => {
-        stdout += data.toString();
-      });
-
-      cargo.stderr.on("data", (data) => {
-        stderr += data.toString();
-      });
-
-      cargo.on("close", (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`cargo build failed with exit code ${code}:\n${stderr}`));
-        }
-      });
-
-      cargo.on("error", (error) => {
-        reject(new Error(`Failed to spawn cargo: ${error.message}`));
-      });
+      },
+      errorPrefix: "cargo build",
     });
+  }
+
+  private async runWasmOpt(inputWasmFile: string): Promise<string> {
+    // If optimization is disabled, skip wasm-opt
+    if (!this.options.optimizeWebassembly) {
+      return inputWasmFile;
+    }
+
+    const optimizedWasmFile = inputWasmFile.replace(".wasm", ".opt.wasm");
+
+    // Default optimization flags for good balance of size and performance
+    const wasmOptArgs = [inputWasmFile, "-o", optimizedWasmFile, "-O"];
+
+    console.log(`Running wasm-opt on ${inputWasmFile}...`);
+
+    await spawnProcess("wasm-opt", wasmOptArgs);
+
+    console.log("wasm-opt completed successfully");
+    return optimizedWasmFile;
   }
 
   private async runWasmBindgen(wasmFile: string, packageName: string): Promise<CompilationResult> {
@@ -235,39 +212,13 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       ...this.options.wasmBindgenArgs,
     ];
 
-    return new Promise((resolve, reject) => {
-      const wasmBindgen = spawn("wasm-bindgen", wasmBindgenArgs, {
-        stdio: ["inherit", "pipe", "pipe"],
-      });
+    await spawnProcess("wasm-bindgen", wasmBindgenArgs, {});
 
-      let stdout = "";
-      let stderr = "";
-
-      wasmBindgen.stdout.on("data", (data) => {
-        stdout += data.toString();
-      });
-
-      wasmBindgen.stderr.on("data", (data) => {
-        stderr += data.toString();
-      });
-
-      wasmBindgen.on("close", (code) => {
-        if (code === 0) {
-          const result: CompilationResult = {
-            jsPath: path.join(outputDir, "index.js"),
-            wasmPath: path.join(outputDir, "index_bg.wasm"),
-            dtsPath: path.join(outputDir, "index.d.ts"),
-          };
-          resolve(result);
-        } else {
-          reject(new Error(`wasm-bindgen failed with exit code ${code}:\n${stderr}`));
-        }
-      });
-
-      wasmBindgen.on("error", (error) => {
-        reject(new Error(`Failed to spawn wasm-bindgen: ${error.message}`));
-      });
-    });
+    return {
+      jsPath: path.join(outputDir, "index.js"),
+      wasmPath: path.join(outputDir, "index_bg.wasm"),
+      dtsPath: path.join(outputDir, "index.d.ts"),
+    };
   }
 
   private extractPackageName(cargoToml: string): string {
@@ -356,4 +307,56 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       return false;
     }
   }
+}
+
+interface SpawnProcessOptions {
+  options?: Exclude<SpawnOptions, "stdio">;
+  errorPrefix?: string;
+}
+
+interface SpawnResult {
+  stdout: string;
+  stderr: string;
+}
+
+async function spawnProcess(
+  command: string,
+  args: string[],
+  { options, errorPrefix }: SpawnProcessOptions = {},
+): Promise<SpawnResult> {
+  return new Promise((resolve, reject) => {
+    const childProcess = spawn(command, args, {
+      stdio: ["inherit", "pipe", "pipe"],
+      ...options,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    if (childProcess.stdout) {
+      childProcess.stdout.on("data", (data: any) => {
+        stdout += data.toString();
+      });
+    }
+
+    if (childProcess.stderr) {
+      childProcess.stderr.on("data", (data: any) => {
+        stderr += data.toString();
+      });
+    }
+
+    childProcess.on("close", (code: number | null) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        const prefix = errorPrefix || command;
+        reject(new Error(`${prefix} failed with exit code ${code}:\n${stderr}`));
+      }
+    });
+
+    childProcess.on("error", (error: any) => {
+      const prefix = errorPrefix || command;
+      reject(new Error(`Failed to spawn ${prefix}: ${error.message}`));
+    });
+  });
 }

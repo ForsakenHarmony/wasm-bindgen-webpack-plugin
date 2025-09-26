@@ -26,7 +26,9 @@ export default {
       template: "src/index.html",
       title: "WASM Bindgen Webpack Plugin Example",
     }),
-    new WasmBindgenWebpackPlugin(),
+    new WasmBindgenWebpackPlugin({
+      optimizeWebassembly: true,
+    }),
   ],
   experiments: {
     asyncWebAssembly: true,
