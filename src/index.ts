@@ -214,6 +214,19 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
     await spawnProcess("wasm-bindgen", wasmBindgenArgs, {});
 
+    // Generate package.json for the output
+    const packageJsonContent = {
+      name: packageName,
+      version: "0.0.0",
+      main: "index.js",
+      types: "index.d.ts",
+      sideEffects: true,
+      private: true,
+    };
+
+    const packageJsonPath = path.join(outputDir, "package.json");
+    fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJsonContent, null, 2)}\n`);
+
     return {
       jsPath: path.join(outputDir, "index.js"),
       wasmPath: path.join(outputDir, "index_bg.wasm"),
