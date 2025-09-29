@@ -1,4 +1,4 @@
-import * as wasm from "../rust-lib/Cargo.toml";
+import * as wasm from "../rust-lib/src/lib.rs";
 
 // Type definitions for better TypeScript support
 type StatusType = "loading" | "success" | "error";

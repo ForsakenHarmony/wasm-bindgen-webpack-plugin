@@ -21,8 +21,20 @@ interface CompilationResult {
 }
 
 interface CargoMetadata {
-  // biome-ignore lint/style/useNamingConvention: third party json
+  // biome-ignore lint/style/useNamingConvention: third party JSON
   target_directory: string;
+  [key: string]: unknown;
+}
+
+interface CargoManifest {
+  // biome-ignore lint/style/useNamingConvention: third party JSON
+  manifest_path: string;
+  targets: Array<{
+    name: string;
+    // biome-ignore lint/style/useNamingConvention: third party JSON
+    crate_types: string[];
+    [key: string]: unknown;
+  }>;
   [key: string]: unknown;
 }
 
@@ -42,19 +54,23 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
   apply(compiler: Compiler): void {
     compiler.hooks.normalModuleFactory.tap("WasmBindgenWebpackPlugin", (normalModuleFactory) => {
-      // Hook into the module resolution to intercept Cargo.toml imports
+      // Hook into the module resolution to intercept lib.rs imports
       normalModuleFactory.hooks.beforeResolve.tapAsync("WasmBindgenWebpackPlugin", (resolveData, callback) => {
-        if (!resolveData.request.endsWith("Cargo.toml")) {
+        if (!resolveData.request.endsWith("lib.rs")) {
           return callback(null);
         }
 
-        const cargoTomlPath = path.resolve(resolveData.context, resolveData.request);
+        const libRsPath = path.resolve(resolveData.context, resolveData.request);
 
-        if (!fs.existsSync(cargoTomlPath)) {
-          return callback(new Error(`Cargo.toml not found at ${cargoTomlPath}`));
+        if (!fs.existsSync(libRsPath)) {
+          return callback(new Error(`lib.rs not found at ${libRsPath}`));
         }
 
-        this.compileRustCrate(cargoTomlPath)
+        // Get manifest info using cargo read-manifest
+        this.getManifestInfo(path.dirname(libRsPath))
+          .then(({ manifestPath, crateName }) => {
+            return this.compileRustCrate(manifestPath, crateName);
+          })
           .then((result) => {
             // Replace the request with the generated JS file (modify in place)
             resolveData.request = result.jsPath;
@@ -91,7 +107,30 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     });
   }
 
-  private async compileRustCrate(cargoTomlPath: string): Promise<CompilationResult> {
+  private async getManifestInfo(libRsDir: string): Promise<{ manifestPath: string; crateName: string }> {
+    const { stdout } = await spawnProcess("cargo", ["read-manifest"], {
+      spawnOptions: {
+        cwd: libRsDir,
+      },
+      errorPrefix: "cargo read-manifest",
+    });
+
+    const manifest: CargoManifest = JSON.parse(stdout);
+    const cdylibTarget = manifest.targets.find((target) => target.crate_types.includes("cdylib"));
+
+    if (!cdylibTarget) {
+      throw new Error(
+        'No cdylib target found in Cargo.toml. Make sure your Cargo.toml includes [lib] with crate-type = ["cdylib"]',
+      );
+    }
+
+    return {
+      manifestPath: manifest.manifest_path,
+      crateName: cdylibTarget.name,
+    };
+  }
+
+  private async compileRustCrate(cargoTomlPath: string, crateName: string): Promise<CompilationResult> {
     const cargoDir = path.dirname(cargoTomlPath);
     const cacheKey = cargoTomlPath;
 
@@ -107,10 +146,6 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     try {
       console.log(`Compiling Rust crate at ${cargoDir}...`);
 
-      // Read Cargo.toml to get the package name
-      const cargoToml = fs.readFileSync(cargoTomlPath, "utf-8");
-      const packageName = this.extractPackageName(cargoToml);
-
       // Step 1: Get the target directory from cargo metadata
       const cargoTargetDir = await this.getCargoTargetDir(cargoDir);
 
@@ -118,16 +153,16 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       await this.runCargoBuild(cargoDir, cargoTargetDir);
 
       // Step 3: Optionally run wasm-opt on the WebAssembly file
-      const wasmFile = path.join(cargoTargetDir, "wasm32-unknown-unknown", "release", `${packageName}.wasm`);
+      const wasmFile = path.join(cargoTargetDir, "wasm32-unknown-unknown", "release", `${crateName}.wasm`);
       const optimizedWasmFile = await this.runWasmOpt(wasmFile);
 
       // Step 4: Run wasm-bindgen
-      const result = await this.runWasmBindgen(optimizedWasmFile, packageName);
+      const result = await this.runWasmBindgen(optimizedWasmFile, crateName);
 
       // Cache the result
       this.compilationCache.set(cacheKey, result);
 
-      console.log(`Successfully compiled ${packageName} to WebAssembly`);
+      console.log(`Successfully compiled ${crateName} to WebAssembly`);
       return result;
     } catch (error) {
       console.error(`Failed to compile Rust crate at ${cargoDir}:`, error);
@@ -143,7 +178,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     }
 
     const { stdout } = await spawnProcess("cargo", ["metadata", "--format-version", "1"], {
-      options: {
+      spawnOptions: {
         cwd: cargoDir,
       },
       errorPrefix: "cargo metadata",
@@ -168,7 +203,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     ];
 
     await spawnProcess("cargo", cargoArgs, {
-      options: {
+      spawnOptions: {
         cwd: cargoDir,
       },
       errorPrefix: "cargo build",
@@ -194,8 +229,8 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     return optimizedWasmFile;
   }
 
-  private async runWasmBindgen(wasmFile: string, packageName: string): Promise<CompilationResult> {
-    const outputDir = path.join(this.options.cacheDir, packageName);
+  private async runWasmBindgen(wasmFile: string, crateName: string): Promise<CompilationResult> {
+    const outputDir = path.join(this.options.cacheDir, crateName);
 
     // Create output directory
     if (!fs.existsSync(outputDir)) {
@@ -216,7 +251,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
     // Generate package.json for the output
     const packageJsonContent = {
-      name: packageName,
+      name: crateName,
       version: "0.0.0",
       main: "index.js",
       types: "index.d.ts",
@@ -232,14 +267,6 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       wasmPath: path.join(outputDir, "index_bg.wasm"),
       dtsPath: path.join(outputDir, "index.d.ts"),
     };
-  }
-
-  private extractPackageName(cargoToml: string): string {
-    const nameMatch = cargoToml.match(/^\s*name\s*=\s*["']([^"']+)["']/m);
-    if (!nameMatch) {
-      throw new Error("Could not find package name in Cargo.toml");
-    }
-    return nameMatch[1].replace(/-/g, "_"); // Rust converts hyphens to underscores in filenames
   }
 
   private addRustFilesToDependencies(dir: string, compilation: Compilation): void {
@@ -323,7 +350,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 }
 
 interface SpawnProcessOptions {
-  options?: Exclude<SpawnOptions, "stdio">;
+  spawnOptions?: Exclude<SpawnOptions, "stdio">;
   errorPrefix?: string;
 }
 
@@ -335,12 +362,12 @@ interface SpawnResult {
 async function spawnProcess(
   command: string,
   args: string[],
-  { options, errorPrefix }: SpawnProcessOptions = {},
+  { spawnOptions, errorPrefix }: SpawnProcessOptions = {},
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     const childProcess = spawn(command, args, {
       stdio: ["inherit", "pipe", "pipe"],
-      ...options,
+      ...spawnOptions,
     });
 
     let stdout = "";

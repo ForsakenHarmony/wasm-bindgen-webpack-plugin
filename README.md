@@ -2,11 +2,11 @@
 
 WARNING: Most of this plugin was written by an LLM.
 
-A Webpack plugin that automatically compiles Rust crates to WebAssembly when you import `Cargo.toml` files.
+A Webpack plugin that automatically compiles Rust crates to WebAssembly when you import `lib.rs` files.
 
 ## Features
 
-- 🦀 **Automatic Rust compilation**: Compiles Rust crates to WebAssembly when importing `Cargo.toml`
+- 🦀 **Automatic Rust compilation**: Compiles Rust crates to WebAssembly when importing `lib.rs`
 - 🚀 **wasm-bindgen integration**: Automatically runs `wasm-bindgen` to generate JS bindings
 - 💾 **Smart caching**: Avoids recompilation when source hasn't changed
 - 🎯 **TypeScript support**: Generates TypeScript declarations
@@ -166,11 +166,11 @@ pub fn add(a: i32, b: i32) -> i32 {
 
 ### 3. Import in JavaScript/TypeScript
 
-Now you can import the Rust crate directly by importing its `Cargo.toml`:
+Now you can import the Rust crate directly by importing its `lib.rs`:
 
 ```typescript
 // Import the Rust crate - the plugin will compile it automatically!
-import * as wasmModule from './my-rust-lib/Cargo.toml';
+import * as wasmModule from './my-rust-lib/src/lib.rs';
 
 // Use the exported functions
 wasmModule.greet("WebAssembly");
@@ -178,17 +178,29 @@ const result = wasmModule.add(5, 3);
 console.log(result); // 8
 ```
 
+#### TypeScript Support
+
+If you're using TypeScript, you can create a declaration file next to your `lib.rs` that re-exports the actual generated types:
+
+```typescript
+// my-rust-lib/src/lib.rs.d.ts
+export * from "../../.cache/wasm/my_rust_lib";
+```
+
+The path in the re-export should match your cache directory structure. By default, the plugin caches compiled WebAssembly modules at `.cache/wasm/{package_name}/`.
+
 ## How it Works
 
-1. **Detection**: The plugin hooks into Webpack's module resolution to detect when you import a `Cargo.toml` file
-2. **Target Directory Discovery**: Uses `cargo metadata` to determine the correct target directory for the project
-3. **Compilation**: When detected, it:
+1. **Detection**: The plugin hooks into Webpack's module resolution to detect when you import a `lib.rs` file
+2. **Manifest Discovery**: Uses `cargo read-manifest` from the directory containing the `lib.rs` file to get both the `Cargo.toml` location and the exact target name
+3. **Target Directory Discovery**: Uses `cargo metadata` to determine the correct target directory for the project
+4. **Compilation**: When detected, it:
    - Runs `cargo build --target wasm32-unknown-unknown --target-dir <discovered-target-dir>` to compile the Rust crate to WebAssembly
    - Optionally runs `wasm-opt` on the resulting `.wasm` file to optimize it (if `wasmOptArgs` are provided)
    - Runs `wasm-bindgen` on the (potentially optimized) `.wasm` file to generate JavaScript bindings and TypeScript declarations
-4. **Caching**: Results are cached in the specified cache directory and only recompiled when the `Cargo.toml` or Rust source files change
-5. **Integration**: The generated JavaScript file is returned to Webpack as if you had imported it directly
-6. **Hot Reloading**: All Rust source files and `Cargo.toml` are added as file dependencies for proper hot reloading
+5. **Caching**: Results are cached in the specified cache directory and only recompiled when the `Cargo.toml` or Rust source files change
+6. **Integration**: The generated JavaScript file is returned to Webpack as if you had imported it directly
+7. **Hot Reloading**: All Rust source files and `Cargo.toml` are added as file dependencies for proper hot reloading
 
 ## Configuration Options
 
