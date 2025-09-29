@@ -9,7 +9,7 @@
     "dev": "webpack serve --mode=development"
   },
   "devDependencies": {
-    "wasm-bindgen-webpack-plugin": "workspace:*",
+    "@harmony/wasm-bindgen-webpack-plugin": "workspace:*",
     "webpack": "^5.88.0",
     "webpack-cli": "^5.1.0",
     "webpack-dev-server": "^4.15.0",

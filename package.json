@@ -1,5 +1,5 @@
 {
-  "name": "wasm-bindgen-webpack-plugin",
+  "name": "@harmony/wasm-bindgen-webpack-plugin",
   "description": "Webpack plugin that compiles Rust crates to WebAssembly when importing Cargo.toml files",
   "version": "0.1.0",
   "license": "MIT or Apache-2.0",

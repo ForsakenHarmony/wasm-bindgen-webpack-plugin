@@ -1,6 +1,6 @@
 import * as path from "node:path";
+import { WasmBindgenWebpackPlugin } from "@harmony/wasm-bindgen-webpack-plugin";
 import HtmlWebpackPlugin from "html-webpack-plugin";
-import { WasmBindgenWebpackPlugin } from "wasm-bindgen-webpack-plugin";
 
 export default {
   entry: "./src/index.ts",
