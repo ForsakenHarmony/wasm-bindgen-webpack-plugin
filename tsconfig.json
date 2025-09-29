@@ -1,18 +1,34 @@
 {
   "compilerOptions": {
+    // type checking
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // interop constraints
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // environment
+    "lib": ["es2024", "ESNext.Array", "ESNext.Collection", "ESNext.Iterator"],
     "target": "ES2022",
-    "lib": ["ES2022"],
-    "module": "CommonJS",
+
+    // modules
+    "baseUrl": ".",
+    "module": "nodenext",
+    "types": ["node"], // disable implicit types
+
+    // emit
     "declaration": true,
     "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "node",
-    "resolveJsonModule": true
+    "stripInternal": true,
+
+    // completeness
+    "skipLibCheck": true
   },
-  "include": ["src/**/*"],
+  "files": ["src/index.ts"],
   "exclude": ["node_modules", "dist", "example"]
 }

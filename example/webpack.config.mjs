@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { WasmBindgenWebpackPlugin } from "@harmony/wasm-bindgen-webpack-plugin";
+import ForkTsCheckerWebpackPlugin from "fork-ts-checker-webpack-plugin";
 import HtmlWebpackPlugin from "html-webpack-plugin";
 
 export default {
@@ -13,7 +14,13 @@ export default {
     rules: [
       {
         test: /\.tsx?$/,
-        use: "ts-loader",
+        use: {
+          loader: "ts-loader",
+          options: {
+            // ForkTsCheckerWebpackPlugin does async type checking
+            transpileOnly: true,
+          },
+        },
         exclude: /node_modules/,
       },
     ],
@@ -28,6 +35,16 @@ export default {
     }),
     new WasmBindgenWebpackPlugin({
       optimizeWebassembly: true,
+    }),
+    new ForkTsCheckerWebpackPlugin({
+      // Make webpack wait for type checking to complete
+      async: false,
+      typescript: {
+        diagnosticOptions: {
+          semantic: true,
+          syntactic: true,
+        },
+      },
     }),
   ],
   experiments: {

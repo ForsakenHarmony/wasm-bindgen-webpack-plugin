@@ -189,6 +189,58 @@ export * from "../../.cache/wasm/my_rust_lib";
 
 The path in the re-export should match your cache directory structure. By default, the plugin caches compiled WebAssembly modules at `.cache/wasm/{package_name}/`.
 
+##### Handling TypeScript Compilation Timing
+
+When building from a clean state (no cache), you might encounter TypeScript errors because the Rust code hasn't been compiled yet when TypeScript tries to type-check your code. To solve this, use `ForkTsCheckerWebpackPlugin` to separate transpilation from type checking:
+
+```bash
+# Install the plugin
+npm install --save-dev fork-ts-checker-webpack-plugin
+```
+
+```javascript
+// webpack.config.js
+const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
+
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: {
+          loader: 'ts-loader',
+          options: {
+            // ForkTsCheckerWebpackPlugin does async type checking
+            transpileOnly: true,
+          },
+        },
+        exclude: /node_modules/,
+      },
+    ],
+  },
+  plugins: [
+    new WasmBindgenWebpackPlugin({
+      optimizeWebassembly: true,
+    }),
+    new ForkTsCheckerWebpackPlugin({
+      // Make webpack wait for type checking to complete
+      async: false,
+      typescript: {
+        diagnosticOptions: {
+          semantic: true,
+          syntactic: true,
+        },
+      },
+    }),
+  ],
+};
+```
+
+This configuration:
+- Uses `transpileOnly: true` to disable type checking during the initial webpack pass
+- Runs `ForkTsCheckerWebpackPlugin` with `async: false` to perform type checking after webpack module resolution
+- Ensures that Rust compilation and type generation happens before TypeScript type checking
+
 ## How it Works
 
 1. **Detection**: The plugin hooks into Webpack's module resolution to detect when you import a `lib.rs` file
@@ -288,6 +340,7 @@ The `optimizeWebassembly: true` flag automatically applies these optimization fl
 2. **"wasm-bindgen: command not found"**: Install wasm-bindgen-cli with `cargo install wasm-bindgen-cli`
 3. **"target 'wasm32-unknown-unknown' not installed"**: Run `rustup target add wasm32-unknown-unknown`
 4. **"wasm-opt: command not found"**: Install binaryen (`brew install binaryen` on macOS) or set `optimizeWebassembly: false` in your config
+5. **TypeScript errors on first build** (e.g., "Property 'add' does not exist"): This happens when TypeScript tries to type-check before Rust compilation generates the types. Use `ForkTsCheckerWebpackPlugin` as described in the [TypeScript Support](#handling-typescript-compilation-timing) section
 
 ### Performance Tips
 
