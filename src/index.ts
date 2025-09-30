@@ -3,6 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Compilation, Compiler, WebpackPluginInstance } from "webpack";
 
+import type { WebpackLogger } from "./logger";
+import { getInfrastructureLogger, getLogger } from "./logger";
+
 export interface WasmBindgenWebpackPluginOptions {
   /** Directory where compiled wasm files will be cached */
   cacheDir?: string;
@@ -38,6 +41,8 @@ interface CargoManifest {
   [key: string]: unknown;
 }
 
+const PLUGIN_NAME = "WasmBindgenWebpackPlugin";
+
 export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
   private options: Required<WasmBindgenWebpackPluginOptions>;
   private compilationCache: Map<string, CompilationResult> = new Map();
@@ -56,37 +61,36 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     // Integrate with ForkTsCheckerWebpackPlugin if it exists
     this.setupForkTsCheckerIntegration(compiler);
 
-    compiler.hooks.normalModuleFactory.tap("WasmBindgenWebpackPlugin", (normalModuleFactory) => {
+    compiler.hooks.normalModuleFactory.tap(PLUGIN_NAME, (normalModuleFactory) => {
       // Hook into the module resolution to intercept lib.rs imports
-      normalModuleFactory.hooks.beforeResolve.tapAsync("WasmBindgenWebpackPlugin", (resolveData, callback) => {
+      normalModuleFactory.hooks.beforeResolve.tapPromise(PLUGIN_NAME, async (resolveData) => {
         if (!resolveData.request.endsWith("lib.rs")) {
-          return callback(null);
+          return;
         }
+
+        const logger = getInfrastructureLogger(compiler);
 
         const libRsPath = path.resolve(resolveData.context, resolveData.request);
 
         if (!fs.existsSync(libRsPath)) {
-          return callback(new Error(`lib.rs not found at ${libRsPath}`));
+          throw new Error(`lib.rs not found at ${libRsPath}`);
         }
 
         // Get manifest info using cargo read-manifest
-        this.getManifestInfo(path.dirname(libRsPath))
-          .then(({ manifestPath, crateName }) => {
-            return this.compileRustCrate(manifestPath, crateName);
-          })
-          .then((result) => {
-            // Replace the request with the generated JS file (modify in place)
-            resolveData.request = result.jsPath;
-            callback(null);
-          })
-          .catch((error) => {
-            callback(error);
-          });
+        const { manifestPath, crateName } = await this.getManifestInfo(path.dirname(libRsPath));
+        const crateDir = path.dirname(manifestPath);
+
+        const result = await this.compileRustCrate({ crateDir, crateName, logger });
+
+        // Replace the request with the generated JS file (modify in place)
+        resolveData.request = result.jsPath;
+
+        return;
       });
     });
 
     // Add file dependencies for hot reloading
-    compiler.hooks.compilation.tap("WasmBindgenWebpackPlugin", (compilation: Compilation) => {
+    compiler.hooks.compilation.tap(PLUGIN_NAME, (compilation: Compilation) => {
       if (compilation.compiler !== compiler) {
         // run only for the compiler that the plugin was registered for
         return;
@@ -108,7 +112,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     });
 
     // Ensure cache directory exists
-    compiler.hooks.beforeRun.tap("WasmBindgenWebpackPlugin", () => {
+    compiler.hooks.beforeRun.tap(PLUGIN_NAME, () => {
       if (!fs.existsSync(this.options.cacheDir)) {
         fs.mkdirSync(this.options.cacheDir, { recursive: true });
       }
@@ -127,7 +131,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       const compilationPromises: WeakMap<Compilation, PromiseWithResolveAndReject<null>> = new WeakMap();
 
       // Delay ForkTsChecker start until the current WASM compilation completes
-      compiler.hooks.compilation.tap("WasmBindgenWebpackPlugin", (compilation: Compilation) => {
+      compiler.hooks.compilation.tap(PLUGIN_NAME, (compilation: Compilation) => {
         if (compilation.compiler !== compiler) {
           // run only for the compiler that the plugin was registered for
           return;
@@ -136,10 +140,16 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
         compilationPromises.set(compilation, createPromise<null>());
       });
 
-      hooks.start.tapAsync("WasmBindgenWebpackPlugin", async (_change, compilation, callback) => {
+      hooks.start.tapAsync(PLUGIN_NAME, async (_change, compilation, callback) => {
+        const logger = getLogger(compilation);
+
         try {
+          logger.debug("making TsChecker wait for compilation");
+
           // Wait for the current WASM compilation to complete
           await compilationPromises.get(compilation)?.promise;
+
+          logger.debug("compilation done");
           callback();
         } catch (error) {
           callback(error instanceof Error ? error : new Error(String(error)));
@@ -147,7 +157,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       });
 
       // Resolve the promise after the compilation is complete
-      compiler.hooks.afterCompile.tap("WasmBindgenWebpackPlugin", (compilation) => {
+      compiler.hooks.afterCompile.tap(PLUGIN_NAME, (compilation) => {
         if (compilation.compiler !== compiler) {
           // run only for the compiler that the plugin was registered for
           return;
@@ -157,7 +167,9 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
         compilationPromises.delete(compilation);
       });
 
-      console.log("Integrated with `ForkTsCheckerWebpackPlugin` - TypeScript checking will wait for WASM compilation");
+      const logger = getInfrastructureLogger(compiler);
+
+      logger.debug("integrated with `ForkTsCheckerWebpackPlugin`");
     } catch (error) {
       // ForkTsCheckerWebpackPlugin is not installed or not available.
     }
@@ -186,8 +198,12 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     };
   }
 
-  private async compileRustCrate(cargoTomlPath: string, crateName: string): Promise<CompilationResult> {
-    const cargoDir = path.dirname(cargoTomlPath);
+  private async compileRustCrate({
+    crateDir,
+    crateName,
+    logger,
+  }: { crateDir: string; crateName: string; logger: WebpackLogger }): Promise<CompilationResult> {
+    const cargoTomlPath = path.join(crateDir, "Cargo.toml");
     const cacheKey = cargoTomlPath;
 
     // Check if we have a cached result
@@ -200,17 +216,17 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     }
 
     try {
-      console.log(`Compiling Rust crate at ${cargoDir}...`);
+      logger.info(`Compiling Rust crate: ${crateDir}`);
 
       // Step 1: Get the target directory from cargo metadata
-      const cargoTargetDir = await this.getCargoTargetDir(cargoDir);
+      const cargoTargetDir = await this.getCargoTargetDir({ crateDir, logger });
 
       // Step 2: Compile Rust to WebAssembly
-      await this.runCargoBuild(cargoDir, cargoTargetDir);
+      await this.runCargoBuild({ crateDir, cargoTargetDir });
 
       // Step 3: Optionally run wasm-opt on the WebAssembly file
       const wasmFile = path.join(cargoTargetDir, "wasm32-unknown-unknown", "release", `${crateName}.wasm`);
-      const optimizedWasmFile = await this.runWasmOpt(wasmFile);
+      const optimizedWasmFile = await this.runWasmOpt({ wasmFile, logger });
 
       // Step 4: Run wasm-bindgen
       const result = await this.runWasmBindgen(optimizedWasmFile, crateName);
@@ -218,37 +234,42 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       // Cache the result
       this.compilationCache.set(cacheKey, result);
 
-      console.log(`Successfully compiled ${crateName} to WebAssembly`);
+      logger.info(`Successfully compiled: ${crateName}`);
       return result;
     } catch (error) {
-      console.error(`Failed to compile Rust crate at ${cargoDir}:`, error);
+      logger.error(`Failed to compile Rust crate at: ${crateDir}`, error);
       throw error;
     }
   }
 
-  private async getCargoTargetDir(cargoDir: string): Promise<string> {
+  private async getCargoTargetDir({ crateDir, logger }: { crateDir: string; logger: WebpackLogger }): Promise<string> {
     // Check cache first
-    if (this.cargoTargetDirCache.has(cargoDir)) {
+    if (this.cargoTargetDirCache.has(crateDir)) {
       // biome-ignore lint/style/noNonNullAssertion: checked in the if condition
-      return this.cargoTargetDirCache.get(cargoDir)!;
+      return this.cargoTargetDirCache.get(crateDir)!;
     }
 
     const { stdout } = await spawnProcess("cargo", ["metadata", "--format-version", "1"], {
       spawnOptions: {
-        cwd: cargoDir,
+        cwd: crateDir,
       },
       errorPrefix: "cargo metadata",
     });
 
     const metadata: CargoMetadata = JSON.parse(stdout);
     const targetDirectory = metadata.target_directory;
-    console.log(`Cargo target directory: ${targetDirectory}`);
+
     // Cache the result
-    this.cargoTargetDirCache.set(cargoDir, targetDirectory);
+    this.cargoTargetDirCache.set(crateDir, targetDirectory);
+
+    logger.debug(`Cargo target directory: ${targetDirectory}`);
     return targetDirectory;
   }
 
-  private async runCargoBuild(cargoDir: string, cargoTargetDir: string): Promise<void> {
+  private async runCargoBuild({
+    crateDir,
+    cargoTargetDir,
+  }: { crateDir: string; cargoTargetDir: string }): Promise<void> {
     const cargoArgs = [
       "build",
       "--target",
@@ -260,24 +281,24 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
     await spawnProcess("cargo", cargoArgs, {
       spawnOptions: {
-        cwd: cargoDir,
+        cwd: crateDir,
       },
       errorPrefix: "cargo build",
     });
   }
 
-  private async runWasmOpt(inputWasmFile: string): Promise<string> {
+  private async runWasmOpt({ wasmFile, logger }: { wasmFile: string; logger: WebpackLogger }): Promise<string> {
     // If optimization is disabled, skip wasm-opt
     if (!this.options.optimizeWebassembly) {
-      return inputWasmFile;
+      return wasmFile;
     }
 
-    const optimizedWasmFile = inputWasmFile.replace(".wasm", ".opt.wasm");
+    const optimizedWasmFile = wasmFile.replace(".wasm", ".opt.wasm");
 
     // Default optimization flags for good balance of size and performance
-    const wasmOptArgs = [inputWasmFile, "-o", optimizedWasmFile, "-O"];
+    const wasmOptArgs = [wasmFile, "-o", optimizedWasmFile, "-O"];
 
-    console.log(`Running wasm-opt on ${inputWasmFile}...`);
+    logger.info(`Running wasm-opt on: ${wasmFile}`);
 
     await spawnProcess("wasm-opt", wasmOptArgs);
 
