@@ -1,12 +1,15 @@
 {
   "name": "@harmony/wasm-bindgen-webpack-plugin",
   "description": "Webpack plugin that compiles Rust crates to WebAssembly when importing lib.rs files",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "license": "MIT or Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist/"],
   "keywords": ["webpack", "plugin", "rust", "webassembly", "wasm", "wasm-bindgen"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
