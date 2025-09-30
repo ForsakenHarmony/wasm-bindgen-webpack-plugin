@@ -17,10 +17,15 @@ export interface WasmBindgenWebpackPluginOptions {
   optimizeWebassembly?: boolean;
 }
 
-interface CompilationResult {
+interface WasmBindgenResult {
   jsPath: string;
   wasmPath: string;
   dtsPath?: string;
+}
+
+interface CompilationResult {
+  outputPaths: WasmBindgenResult;
+  cargoWasmMtime: Date;
 }
 
 interface CargoMetadata {
@@ -83,7 +88,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
         const result = await this.compileRustCrate({ crateDir, crateName, logger });
 
         // Replace the request with the generated JS file (modify in place)
-        resolveData.request = result.jsPath;
+        resolveData.request = result.outputPaths.jsPath;
 
         return;
       });
@@ -207,12 +212,9 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     const cacheKey = cargoTomlPath;
 
     // Check if we have a cached result
-    if (this.compilationCache.has(cacheKey)) {
-      // biome-ignore lint/style/noNonNullAssertion: checked in the if condition
-      const cached = this.compilationCache.get(cacheKey)!;
-      if (this.isResultValid(cached, cargoTomlPath)) {
-        return cached;
-      }
+    const cached = this.compilationCache.get(cacheKey);
+    if (cached != null && this.isResultValid(cached, cargoTomlPath)) {
+      return cached;
     }
 
     try {
@@ -222,14 +224,28 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       const cargoTargetDir = await this.getCargoTargetDir({ crateDir, logger });
 
       // Step 2: Compile Rust to WebAssembly
-      await this.runCargoBuild({ crateDir, cargoTargetDir });
+      const { wasmFile } = await this.runCargoBuild({ crateDir, crateName, cargoTargetDir });
 
-      // Step 3: Optionally run wasm-opt on the WebAssembly file
-      const wasmFile = path.join(cargoTargetDir, "wasm32-unknown-unknown", "release", `${crateName}.wasm`);
+      // Step 3: Check if the WASM file changed
+      const cargoWasmStat = fs.statSync(wasmFile);
+
+      // Check if we have a cached result and the cargo WASM file hasn't changed
+      const cached = this.compilationCache.get(cacheKey);
+      if (cached != null && cached.cargoWasmMtime.getTime() === cargoWasmStat.mtime.getTime()) {
+        logger.info(`WASM file unchanged, using cached bindings: ${crateName}`);
+        return cached;
+      }
+
+      // Step 4: Optionally run wasm-opt on the WebAssembly file
       const optimizedWasmFile = await this.runWasmOpt({ wasmFile, logger });
 
-      // Step 4: Run wasm-bindgen
-      const result = await this.runWasmBindgen(optimizedWasmFile, crateName);
+      // Step 5: Run wasm-bindgen
+      const outputPaths = await this.runWasmBindgen(optimizedWasmFile, crateName);
+
+      const result: CompilationResult = {
+        outputPaths,
+        cargoWasmMtime: cargoWasmStat.mtime,
+      };
 
       // Cache the result
       this.compilationCache.set(cacheKey, result);
@@ -268,8 +284,9 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
   private async runCargoBuild({
     crateDir,
+    crateName,
     cargoTargetDir,
-  }: { crateDir: string; cargoTargetDir: string }): Promise<void> {
+  }: { crateDir: string; crateName: string; cargoTargetDir: string }): Promise<{ wasmFile: string }> {
     const cargoArgs = [
       "build",
       "--target",
@@ -285,6 +302,10 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       },
       errorPrefix: "cargo build",
     });
+
+    const wasmFile = path.join(cargoTargetDir, "wasm32-unknown-unknown", "release", `${crateName}.wasm`);
+
+    return { wasmFile };
   }
 
   private async runWasmOpt({ wasmFile, logger }: { wasmFile: string; logger: WebpackLogger }): Promise<string> {
@@ -305,7 +326,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
     return optimizedWasmFile;
   }
 
-  private async runWasmBindgen(wasmFile: string, crateName: string): Promise<CompilationResult> {
+  private async runWasmBindgen(wasmFile: string, crateName: string): Promise<WasmBindgenResult> {
     const outputDir = path.join(this.options.cacheDir, crateName);
 
     // Create output directory
@@ -347,11 +368,10 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
   private isResultValid(result: CompilationResult, cargoTomlPath: string): boolean {
     try {
+      const { jsPath, wasmPath, dtsPath } = result.outputPaths;
+
       // Check if all generated files still exist
-      const filesExist =
-        fs.existsSync(result.jsPath) &&
-        fs.existsSync(result.wasmPath) &&
-        (!result.dtsPath || fs.existsSync(result.dtsPath));
+      const filesExist = fs.existsSync(jsPath) && fs.existsSync(wasmPath) && (!dtsPath || fs.existsSync(dtsPath));
 
       if (!filesExist) {
         return false;
@@ -359,7 +379,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
       // Check if Cargo.toml has been modified more recently than generated files
       const cargoTomlStat = fs.statSync(cargoTomlPath);
-      const jsStat = fs.statSync(result.jsPath);
+      const jsStat = fs.statSync(jsPath);
 
       if (cargoTomlStat.mtime > jsStat.mtime) {
         return false;
