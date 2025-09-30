@@ -4,3 +4,9 @@ dist/
 .wasm-cache/
 .cache/
 target/
+
+# AI stuff
+.cursor/
+.claude/
+AGENTS.md
+CLAUDE.md
