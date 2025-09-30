@@ -17,7 +17,7 @@ export default {
         use: {
           loader: "ts-loader",
           options: {
-            // ForkTsCheckerWebpackPlugin does async type checking
+            // `ForkTsCheckerWebpackPlugin` does async type checking.
             transpileOnly: true,
           },
         },
@@ -28,24 +28,19 @@ export default {
   resolve: {
     extensions: [".tsx", ".ts", ".js"],
   },
+  infrastructureLogging: {
+    level: "log",
+  },
   plugins: [
     new HtmlWebpackPlugin({
       template: "src/index.html",
       title: "WASM Bindgen Webpack Plugin Example",
     }),
+    // Order matters: `WasmBindgenWebpackPlugin` MUST come before `ForkTsCheckerWebpackPlugin`.
     new WasmBindgenWebpackPlugin({
       optimizeWebassembly: true,
     }),
-    new ForkTsCheckerWebpackPlugin({
-      // Make webpack wait for type checking to complete
-      async: false,
-      typescript: {
-        diagnosticOptions: {
-          semantic: true,
-          syntactic: true,
-        },
-      },
-    }),
+    new ForkTsCheckerWebpackPlugin(),
   ],
   experiments: {
     asyncWebAssembly: true,

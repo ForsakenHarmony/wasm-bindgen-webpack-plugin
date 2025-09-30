@@ -53,6 +53,9 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
   }
 
   apply(compiler: Compiler): void {
+    // Integrate with ForkTsCheckerWebpackPlugin if it exists
+    this.setupForkTsCheckerIntegration(compiler);
+
     compiler.hooks.normalModuleFactory.tap("WasmBindgenWebpackPlugin", (normalModuleFactory) => {
       // Hook into the module resolution to intercept lib.rs imports
       normalModuleFactory.hooks.beforeResolve.tapAsync("WasmBindgenWebpackPlugin", (resolveData, callback) => {
@@ -84,6 +87,11 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
     // Add file dependencies for hot reloading
     compiler.hooks.compilation.tap("WasmBindgenWebpackPlugin", (compilation: Compilation) => {
+      if (compilation.compiler !== compiler) {
+        // run only for the compiler that the plugin was registered for
+        return;
+      }
+
       // Add all known Cargo.toml files and their Rust sources as dependencies
       for (const [cargoTomlPath] of this.compilationCache.entries()) {
         const cargoDir = path.dirname(cargoTomlPath);
@@ -105,6 +113,54 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
         fs.mkdirSync(this.options.cacheDir, { recursive: true });
       }
     });
+  }
+
+  private setupForkTsCheckerIntegration(compiler: Compiler): void {
+    try {
+      // Check if ForkTsCheckerWebpackPlugin is available
+      // biome-ignore format: the import should not be formatted, typescript doesn't like a trailing comma.
+      const ForkTsCheckerWebpackPlugin: typeof import("fork-ts-checker-webpack-plugin")
+        = require("fork-ts-checker-webpack-plugin");
+
+      const hooks = ForkTsCheckerWebpackPlugin.getCompilerHooks(compiler);
+
+      const compilationPromises: WeakMap<Compilation, PromiseWithResolveAndReject<null>> = new WeakMap();
+
+      // Delay ForkTsChecker start until the current WASM compilation completes
+      compiler.hooks.compilation.tap("WasmBindgenWebpackPlugin", (compilation: Compilation) => {
+        if (compilation.compiler !== compiler) {
+          // run only for the compiler that the plugin was registered for
+          return;
+        }
+
+        compilationPromises.set(compilation, createPromise<null>());
+      });
+
+      hooks.start.tapAsync("WasmBindgenWebpackPlugin", async (_change, compilation, callback) => {
+        try {
+          // Wait for the current WASM compilation to complete
+          await compilationPromises.get(compilation)?.promise;
+          callback();
+        } catch (error) {
+          callback(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+
+      // Resolve the promise after the compilation is complete
+      compiler.hooks.afterCompile.tap("WasmBindgenWebpackPlugin", (compilation) => {
+        if (compilation.compiler !== compiler) {
+          // run only for the compiler that the plugin was registered for
+          return;
+        }
+
+        compilationPromises.get(compilation)?.resolve(null);
+        compilationPromises.delete(compilation);
+      });
+
+      console.log("Integrated with `ForkTsCheckerWebpackPlugin` - TypeScript checking will wait for WASM compilation");
+    } catch (error) {
+      // ForkTsCheckerWebpackPlugin is not installed or not available.
+    }
   }
 
   private async getManifestInfo(libRsDir: string): Promise<{ manifestPath: string; crateName: string }> {
@@ -225,7 +281,6 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
 
     await spawnProcess("wasm-opt", wasmOptArgs);
 
-    console.log("wasm-opt completed successfully");
     return optimizedWasmFile;
   }
 
@@ -399,4 +454,28 @@ async function spawnProcess(
       reject(new Error(`Failed to spawn ${prefix}: ${error.message}`));
     });
   });
+}
+
+interface PromiseWithResolveAndReject<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: any) => void;
+}
+
+function createPromise<T>(): PromiseWithResolveAndReject<T> {
+  let resolve: (value: T | PromiseLike<T>) => void;
+  let reject: (reason?: any) => void;
+
+  const promise = new Promise<T>((res, rej) => {
+    reject = rej;
+    resolve = res;
+  });
+
+  return {
+    promise,
+    // biome-ignore lint/style/noNonNullAssertion: resolve and reject are assigned in the promise constructor.
+    resolve: resolve!,
+    // biome-ignore lint/style/noNonNullAssertion: resolve and reject are assigned in the promise constructor.
+    reject: reject!,
+  };
 }

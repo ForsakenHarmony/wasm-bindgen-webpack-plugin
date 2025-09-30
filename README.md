@@ -191,12 +191,15 @@ The path in the re-export should match your cache directory structure. By defaul
 
 ##### Handling TypeScript Compilation Timing
 
-When building from a clean state (no cache), you might encounter TypeScript errors because the Rust code hasn't been compiled yet when TypeScript tries to type-check your code. To solve this, use `ForkTsCheckerWebpackPlugin` to separate transpilation from type checking:
+When building from a clean state (no cache), you might encounter TypeScript errors because the Rust code hasn't been compiled yet when TypeScript tries to type-check your code. To solve this, use `ForkTsCheckerWebpackPlugin` with the correct plugin order.
+
+Install the plugin:
 
 ```bash
-# Install the plugin
-npm install --save-dev fork-ts-checker-webpack-plugin
+pnpm install --save-dev fork-ts-checker-webpack-plugin
 ```
+
+**Important**: Plugin order matters - `WasmBindgenWebpackPlugin` must come before `ForkTsCheckerWebpackPlugin`:
 
 ```javascript
 // webpack.config.js
@@ -210,7 +213,7 @@ module.exports = {
         use: {
           loader: 'ts-loader',
           options: {
-            // ForkTsCheckerWebpackPlugin does async type checking
+            // `ForkTsCheckerWebpackPlugin` does async type checking.
             transpileOnly: true,
           },
         },
@@ -219,27 +222,21 @@ module.exports = {
     ],
   },
   plugins: [
+    // Order matters: `WasmBindgenWebpackPlugin` MUST come before `ForkTsCheckerWebpackPlugin`.
     new WasmBindgenWebpackPlugin({
       optimizeWebassembly: true,
     }),
-    new ForkTsCheckerWebpackPlugin({
-      // Make webpack wait for type checking to complete
-      async: false,
-      typescript: {
-        diagnosticOptions: {
-          semantic: true,
-          syntactic: true,
-        },
-      },
-    }),
+    new ForkTsCheckerWebpackPlugin(),
   ],
 };
 ```
 
 This configuration:
-- Uses `transpileOnly: true` to disable type checking during the initial webpack pass
-- Runs `ForkTsCheckerWebpackPlugin` with `async: false` to perform type checking after webpack module resolution
-- Ensures that Rust compilation and type generation happens before TypeScript type checking
+
+- Automatically delays TypeScript checking until WASM compilation completes
+- Requires both correct plugin order AND internal hook coordination
+- Provides seamless type checking with WASM modules on first build
+- The `WasmBindgenWebpackPlugin` automatically detects and integrates with `ForkTsCheckerWebpackPlugin`
 
 ## How it Works
 
@@ -340,7 +337,7 @@ The `optimizeWebassembly: true` flag automatically applies these optimization fl
 2. **"wasm-bindgen: command not found"**: Install wasm-bindgen-cli with `cargo install wasm-bindgen-cli`
 3. **"target 'wasm32-unknown-unknown' not installed"**: Run `rustup target add wasm32-unknown-unknown`
 4. **"wasm-opt: command not found"**: Install binaryen (`brew install binaryen` on macOS) or set `optimizeWebassembly: false` in your config
-5. **TypeScript errors on first build** (e.g., "Property 'add' does not exist"): This happens when TypeScript tries to type-check before Rust compilation generates the types. Use `ForkTsCheckerWebpackPlugin` as described in the [TypeScript Support](#handling-typescript-compilation-timing) section
+5. **TypeScript errors on first build** (e.g., "Property 'add' does not exist"): This happens when TypeScript tries to type-check before Rust compilation generates the types. Use `ForkTsCheckerWebpackPlugin` with correct plugin order (`WasmBindgenWebpackPlugin` before `ForkTsCheckerWebpackPlugin`) as described in the [TypeScript Support](#handling-typescript-compilation-timing) section
 
 ### Performance Tips
 

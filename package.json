@@ -29,13 +29,17 @@
   },
   "peerDependencies": {
     "@rspack/core": "^1.0.0",
-    "webpack": "^5.0.0"
+    "webpack": "^5.0.0",
+    "fork-ts-checker-webpack-plugin": "^9.1.0"
   },
   "peerDependenciesMeta": {
     "@rspack/core": {
       "optional": true
     },
     "webpack": {
+      "optional": true
+    },
+    "fork-ts-checker-webpack-plugin": {
       "optional": true
     }
   },
