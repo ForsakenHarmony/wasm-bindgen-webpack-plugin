@@ -106,7 +106,7 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
         // Add all .rs files in src/ directory
         const srcDir = path.join(cargoDir, "src");
         if (fs.existsSync(srcDir)) {
-          this.addRustFilesToDependencies(srcDir, compilation);
+          compilation.contextDependencies.add(srcDir);
         }
       }
     });
@@ -343,26 +343,6 @@ export class WasmBindgenWebpackPlugin implements WebpackPluginInstance {
       wasmPath: path.join(outputDir, "index_bg.wasm"),
       dtsPath: path.join(outputDir, "index.d.ts"),
     };
-  }
-
-  private addRustFilesToDependencies(dir: string, compilation: Compilation): void {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-
-        if (entry.isDirectory()) {
-          // Recursively process subdirectories
-          this.addRustFilesToDependencies(fullPath, compilation);
-        } else if (entry.name.endsWith(".rs")) {
-          // Add Rust source files as dependencies
-          compilation.fileDependencies.add(fullPath);
-        }
-      }
-    } catch (error) {
-      // Ignore errors reading directory
-    }
   }
 
   private isResultValid(result: CompilationResult, cargoTomlPath: string): boolean {
